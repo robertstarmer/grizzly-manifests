@@ -7,29 +7,30 @@
 node base {
   $build_node_fqdn = "${::build_node_name}.${::domain_name}"
 
+  class {"sshroot": }
   ########### Folsom Release ###############
 
-    # Disable pipelining to avoid unfortunate interactions between apt and
-    # upstream network gear that does not properly handle http pipelining
-    # See https://bugs.launchpad.net/ubuntu/+source/apt/+bug/996151 for details
-  if ($osfamily == 'debian') {
-    file { '/etc/apt/apt.conf.d/00no_pipelining':
+  # Disable pipelining to avoid unfortunate interactions between apt and
+  # upstream network gear that does not properly handle http pipelining
+  # See https://bugs.launchpad.net/ubuntu/+source/apt/+bug/996151 for details
+
+  file { '/etc/apt/apt.conf.d/00no_pipelining':
       ensure  => file,
       owner   => 'root',
       group   => 'root',
       mode    => '0644',
       content => 'Acquire::http::Pipeline-Depth "0";'
-    }
+  }
 
-    # Load apt prerequisites.  This is only valid on Ubuntu systmes
+  # Load apt prerequisites.  This is only valid on Ubuntu systmes
+  if($::package_repo == 'cisco_repo') {
 
-    if($::package_repo == 'cisco_repo') {
-      apt::source { "cisco-openstack-mirror_grizzly":
-        location => $::location,
-        release => "grizzly-proposed",
-        repos => "main",
-        key => "E8CC67053ED3B199",
-        key_content => '-----BEGIN PGP PUBLIC KEY BLOCK-----
+    apt::source { "cisco-openstack-mirror_grizzly":
+      location => $::location,
+      release => "grizzly-proposed",
+      repos => "main",
+      key => "E8CC67053ED3B199",
+      key_content => '-----BEGIN PGP PUBLIC KEY BLOCK-----
 Version: GnuPG v1.4.11 (GNU/Linux)
 
 mQENBE/oXVkBCACcjAcV7lRGskECEHovgZ6a2robpBroQBW+tJds7B+qn/DslOAN
@@ -60,33 +61,22 @@ xKyLYs5m34d4a0it6wsMem3YCefSYBjyLGSd/kCI/CgOdGN1ZY1HSdLmmjiDkQPQ
 UcXHbA==
 =v6jg
 -----END PGP PUBLIC KEY BLOCK-----',
-        proxy => $::proxy,
-      }
+      proxy => $::proxy,
+    }
 
-      apt::pin { "cisco":
-        priority => '990',
-        originator => 'Cisco'
-      }
-    } elsif($::package_repo == 'cloud_archive') {
-      apt::source { 'openstack_cloud_archive':
-        location          => "http://ubuntu-cloud.archive.canonical.com/ubuntu",
-        release           => "precise-updates/grizzly",
-        repos             => "main",
-        required_packages => 'ubuntu-cloud-keyring',
-      }
-    } else {
-      fail("Unsupported package repo ${::package_repo}")
+    apt::pin { "cisco":
+      priority => '990',
+      originator => 'Cisco'
     }
-  }
-  elsif ($osfamily == 'redhat') {
-    yumrepo { 'cisco-openstack-mirror':
-      descr     => "Cisco Openstack Repository",
-      baseurl  => $::location,
-      gpgcheck => "0", #TODO(prad): Add gpg key
-      enabled  => "1";
+  } elsif($::package_repo == 'cloud_archive') {
+    apt::source { 'openstack_cloud_archive':
+      location          => "http://ubuntu-cloud.archive.canonical.com/ubuntu",
+      release           => "precise-updates/grizzly",
+      repos             => "main",
+      required_packages => 'ubuntu-cloud-keyring',
     }
-    # add a resource dependency so yumrepo loads before package
-    Yumrepo <| |> -> Package <| |>
+  } else {
+    fail("Unsupported package repo ${::package_repo}")
   }
 
   class { pip: }
@@ -130,10 +120,10 @@ node os_base inherits base {
 	  autoupdate 	=> true,
   }
 
-    # Deploy a script that can be used to test nova
-    class { 'openstack::test_file':
-      image_type => $::test_file_image_type,
-    }
+  # Deploy a script that can be used to test nova
+  class { 'openstack::test_file':
+    image_type => 'cirros',
+  }
 
   class { 'openstack::auth_file':
 	  admin_password       => $admin_password,
@@ -150,17 +140,7 @@ node os_base inherits base {
 
 }
 
-class control(
-  $tunnel_ip
-) {
-
-  # in the currently support deployment scenario
-  # all network control services are on the controller.
-  # this is not recomended for production and is merely
-  # used for test setups
-  $enable_dhcp_agent      = true
-  $enable_l3_agent        = true
-  $enable_metadata_agent  = true
+class control($internal_ip) {
 
   class { 'openstack::controller':
     public_address          => $controller_node_public,
@@ -202,9 +182,11 @@ class control(
     # Metadata Configuration
     metadata_shared_secret => 'secret',
     # ovs config
-    ovs_local_ip        => $tunnel_ip,
+    ovs_local_ip        => $vm_net_ip,
     bridge_interface    => $external_interface,
     enable_ovs_agent    => true,
+    # Quantum L3 Agent
+    #l3_auth_url           => $quantum_l3_auth_url,
     # Keystone
     quantum_user_password => $quantum_user_password,
     # horizon
@@ -214,15 +196,111 @@ class control(
     cinder_db_password   => $cinder_db_password,
   }
 
+  class { 'swift::keystone::auth':
+    password => $swift_user_password,
+    address  => $swift_proxy_address,
+  }
+
+
+# Needed to ensure a proper "second" interface is online
+# This same module may be useable for forcing bonded interfaces as well
+
+  if $::configure_network_interfaces {
+    if $::node_gateway {
+      network_config { $::private_interface:
+        ensure => 'present',
+        hotplug => false,
+        family => 'inet',
+        ipaddress => $::controller_node_address,
+        method => 'static',
+        netmask => $::node_netmask,
+        options => {
+          "dns-search" => $::domain_name,
+          "dns-nameservers" => $::cobbler_node_ip,
+          #"gateway" => $::node_gateway
+          "up" => "route add -net 192.168.0.0/16 gw 192.168.240.1 dev eth0",
+        },
+        onboot => 'true',
+        notify => Service['networking'],
+      }
+    } else {
+      network_config { $::private_interface:
+        ensure => 'present',
+        hotplug => false,
+        family => 'inet',
+        ipaddress => $::controller_node_address,
+        method => 'static',
+        netmask => $::node_netmask,
+        options => {
+          "dns-search" => $::domain_name,
+          "dns-nameservers" => $::cobbler_node_ip,
+        },
+        onboot => 'true',
+        notify => Service['networking'],
+      }
+    }
+
+    network_config { 'eth1.252':
+     ensure => 'present',
+     hotplug => false,
+     family => 'inet',
+     ipaddress => '128.107.252.166',
+     method => 'static',
+     netmask => '255.255.255.224',
+     options => {
+       "gateway" => '128.107.252.161',
+       "vlan-raw-device" => 'eth1',
+     },
+     onboot => 'true',
+     notify => Service['networking'],
+    }
+
+    network_config { 'eth0.241':
+      ensure => 'present',
+      hotplug => false,
+      family => 'inet',
+      ipaddress => '0.0.0.0',
+      method => 'static',
+      netmask => '255.255.255.255',
+     options => {
+       "vlan-raw-device" => 'eth0',
+     },
+      onboot => 'true',
+      notify => Service['networking'],
+    }
+    
+    network_config { 'lo':
+      ensure => 'present',
+      hotplug => false,
+      family => 'inet',
+      method => 'loopback',
+      onboot => 'true',
+      notify => Service['networking'],
+    }
+
+    network_config { $::external_interface:
+      ensure => 'present',
+      hotplug => false,
+      family => 'inet',
+      method => 'static',
+      ipaddress => '0.0.0.0',
+      netmask => '255.255.255.255',
+      onboot => 'true',
+      notify => Service['networking'],
+    }
+  }
+
+  service {'networking':
+    ensure => 'running',
+    restart => 'true',
+  }
+
   class { "naginator::control_target": }
 
 }
 
 
-class compute(
-  $internal_ip,
-  $tunnel_ip
-) {
+class compute($internal_ip) {
 
   class { 'openstack::compute':
     # keystone
@@ -245,14 +323,14 @@ class compute(
     # cinder parameters
     cinder_db_password    => $cinder_db_password,
     manage_volumes        => true,
-    volume_group          => 'cinder-volumes',
-    setup_test_volume     => true,
+    volume_group          => 'nova-volumes',
+    setup_test_volume     => false,
     # quantum config
     quantum			          => true,
     quantum_user_password => $quantum_user_password,
     # Quantum OVS
     enable_ovs_agent      => true,
-    ovs_local_ip          => $tunnel_ip,
+    ovs_local_ip          => $vm_net_ip,
      # Quantum L3 Agent
     enable_l3_agent       => false,
     enable_dhcp_agent     => false,
@@ -285,8 +363,8 @@ node master-node inherits "cobbler-node" {
   # Change the servers for your NTP environment
   # (Must be a reachable NTP Server by your build-node, i.e. ntp.esl.cisco.com)
   class { ntp:
-	  servers 	=> $::ntp_servers,
-	  ensure 		=> running,
+	  servers 	=> [$::company_ntp_server],
+  	ensure 		=> running,
 	  autoupdate 	=> true,
   }
 
@@ -300,8 +378,8 @@ node master-node inherits "cobbler-node" {
   class { apt-cacher-ng:
   	proxy 		=> $::proxy,
   	avoid_if_range  => true, # Some proxies have issues with range headers
-                             # this stops us attempting to use them
-                             # marginally less efficient with other proxies
+                                 # this stops us attempting to use them
+                                 # msrginally less efficient with other proxies
   }
 
   if ! $::default_gateway {
