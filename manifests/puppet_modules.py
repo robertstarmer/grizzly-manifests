@@ -27,9 +27,9 @@ import subprocess
 
 ## ----- global variables that can be configurable via cmdline.
 REPO_NAME = "grizzly-proposed"
-APT_REPO_URL = "ftp://ftpeng.cisco.com/openstack/cisco"
+#APT_REPO_URL = "ftp://ftpeng.cisco.com/openstack/cisco"
 # uncomment this line if you prefer to use http
-# APT_REPO_URL = "http://128.107.252.163/openstack/cisco"
+APT_REPO_URL = "http://openstack-repo.cisco.com/openstack/cisco"
 
 ## ------- Other Constants --------------------------
 MODULE_FILE = "modules.list"
@@ -81,6 +81,7 @@ YUM_REPO_KEY = """TBD"""
 
 # yum repo url and .repo file setup
 YUM_REPO_URL = "ftp://ftpeng.cisco.com/openstack/cisco/fedora/dist/grizzly"
+#YUM_REPO_URL = "http://openstack-repo.cisco.com/openstack/cisco/fedora/dist/grizzly"
 YUM_REPO_DATA = """
 [cisco-openstack-mirror]
 name=Cisco Openstack Repository
