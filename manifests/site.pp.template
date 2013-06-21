@@ -1,0 +1,151 @@
+# vim: set tabstop=2:softtabstop=2:shiftwidth=2:noexpandtab
+# This document serves as template for deployment
+# basic multi-node openstack environments.
+# In this scenario Quantum is using OVS with GRE Tunnels
+# Swift is not included.
+
+########### Proxy Configuration ##########
+{% if common.proxy_server %}
+$proxy			= "http://{{ common.proxy_server }}:{{ common.proxy_port }}"
+{% endif %}
+
+$package_repo = 'cisco_repo'
+$location 		= "{{ common.apt_location }}"
+########### Build Node (Cobbler, Puppet Master, NTP) ######
+# Change the following to the host name you have given your build node
+$build_node_name        = "alpha-build" #'{{ nodes["build"].name }}'
+
+########### NTP Configuration ############
+# Change this to the location of a time server in your organization accessible to the build server
+# The build server will synchronize with this time server, and will in turn function as the time
+# server for your OpenStack nodes
+$company_ntp_server	= ["{{ common.ntp_server }}"]
+
+########### Build Node Cobbler Variables ############
+# Change these 5 parameters to define the IP address and other network settings of your build node
+# The cobbler node *must* have this IP configured and it *must* be on the same network as
+# the hosts to install
+$cobbler_node_ip 	= '{{ nodes["build"].ip }}'
+$node_subnet 		= '{{ common.network }}'
+$node_netmask 		= '{{ common.netmask }}'
+# This gateway is optional - if there's a gateway providing a default route, put it here
+# If not, comment it out
+$node_gateway 		= '{{ common.gateway }}'
+$domain_name 		= '{{ common.domain_name }}'
+$cobbler_proxy 		= "http://${cobbler_node_ip}:3142/"
+
+####### Preseed File Configuration #######
+$admin_user 		= '{{ common.admin }}'
+$password_crypted 	= '{{ common.password }}'
+$autostart_puppet	= true
+$ucsm_port 	= '443'
+########### OpenStack Variables ############
+$controller_node_address       = '{{ nodes["control"].ip }}'
+$controller_node_network       = '{{ common.network }}'
+$controller_hostname           = '{{ nodes["control"].name }}'
+$db_allowed_network            = '{{ common.sql_mask }}'
+$controller_node_public        = $controller_node_address
+$controller_node_internal      = $controller_node_address
+
+# Specify which interface in each node is the API Interface
+# This is also known as the Management Interface
+$public_interface    	= 'eth0'
+# Specify the interface used for external connectivity such as floating IPs (only in network/controller node)
+$external_interface	 	= 'eth1'
+
+# Select the drive on which Ubuntu and OpenStack will be installed in each node. Current assumption is
+# that all nodes will be installed on the same device name
+$install_drive           = '{{ common.install_drive }}'
+
+########### OpenStack Service Credentials ############
+$admin_email             = 'root@localhost'
+$admin_password          = 'Cisco123'
+$keystone_db_password    = 'keystone_db_pass'
+$keystone_admin_token    = 'keystone_admin_token'
+$nova_user               = 'nova'
+$nova_db_password        = 'nova_pass'
+$nova_user_password      = 'nova_pass'
+$libvirt_type		 = 'kvm'
+$glance_db_password      = 'glance_pass'
+$glance_user_password    = 'glance_pass'
+$glance_sql_connection   = "mysql://glance:${glance_db_password}@${controller_node_address}/glance"
+$glance_on_swift         = false
+$cinder_user_password	 = 'cinder_pass'
+$cinder_db_password	 = 'cinder_pass'
+$quantum_user_password	 = 'quantum_pass'
+$quantum_db_password	 = 'quantum_pass'
+$rabbit_password         = 'openstack_rabbit_password'
+$rabbit_user             = 'openstack_rabbit_user'
+# Nova DB connection
+$sql_connection 	 = "mysql://${nova_user}:${nova_db_password}@${controller_node_address}/nova"
+
+$glance_backend = 'file'
+
+$test_file_image_type = 'kvm'
+
+$cinder_controller_enabled = true
+#### end shared variables #################
+$cinder_controller_enabled = true
+$cinder_compute_enabled = true
+$cinder_storage_driver = 'iscsi'
+
+
+####### OpenStack Node Definitions #####
+
+node /build-node/ inherits master-node {
+
+#{% for node in nodes %}
+  cobbler_node { "{{ nodes[node].name }}": 
+    node_type => "{{ nodes[node].type }}",
+    mac => "{{ nodes[node].mac }}",
+    ip => "{{ nodes[node].ip }}",
+    power_address => "{{ nodes[node].power_address }}",
+    power_id  => "{{ nodes[node].power_id }}",
+    power_user => "{{ nodes[node].power_admin }}",
+    power_password  => "{{ nodes[node].power_password }}",
+    power_type => "{{ nodes[node].power_type }}"
+ }
+
+#{% endfor %}
+
+### End repeated nodes ###
+}
+
+### Node types ###
+node {{ nodes["build"].name }} inherits build-node { }
+
+node /control-/ inherits os_base { class { compute: crosstalk_ip => "$ipaddress"} }
+node /compute-/ inherits os_base { class { compute: crosstalk_ip => "$ipaddress"} }
+
+
+### End repeated nodes ###
+
+########################################################################
+### All parameters below this point likely do not need to be changed ###
+########################################################################
+
+### Advanced Users Configuration ###
+# These four settings typically do not need to be changed
+# In the default deployment, the build node functions as the DNS and static DHCP server for
+# the OpenStack nodes. These settings can be used if alternate configurations are needed
+$node_dns     = "${cobbler_node_ip}"
+$ip						= "${cobbler_node_ip}"
+$dns_service 	= "dnsmasq"
+$dhcp_service	= "dnsmasq"
+### Puppet Parameters ###
+# These settings load other puppet components. They should not be changed
+$time_zone      = "UTC"
+$interface_bonding = 'true'
+$ipvc_ra = 1
+$max_connect_errors = '10'
+
+import 'cobbler-node'
+import 'core'
+
+## Define the default node, to capture any un-defined nodes that register
+## Simplifies debug when necessary.
+
+node default {
+  notify{"Default Node: Perhaps add a node definition to site.pp": }
+}
+
