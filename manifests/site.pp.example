@@ -564,7 +564,7 @@ $max_connect_errors = '10'
 #  of which root and var are currently supported
 # if you do not want a separate /var from /, set enable_var to false
 # if you do not want extra disk space set aside in an LVM volume
-#  then set enable_hack to false (you likely want this true if you
+#  then set enable_vol_space to false (you likely want this true if you
 #  want to use iSCSI CINDER on the compute nodes, and you must set
 #  expert_disk to true to enable this.
 
